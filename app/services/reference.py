@@ -3,8 +3,8 @@
 Codes are issued from a monotonic counter and formatted into a short,
 customer-friendly string such as ``CW-001042``.
 """
-import threading
 import time
+import threading
 
 _counter = {"value": 1000}
 _counter_lock = threading.Lock()

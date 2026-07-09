@@ -19,11 +19,26 @@ docker compose up --build
 
 The database schema is created automatically on first startup — no manual
 provisioning or seed scripts. The API listens on `http://localhost:8000`.
+SQLite data is stored in the `cowork-data` Docker volume.
+
+Useful Docker commands:
+
+```bash
+docker compose logs -f api
+docker compose down
+docker compose down -v  # also removes the SQLite volume
+```
+
+You can override the exposed host port or JWT secret without editing files:
+
+```bash
+PORT=8080 JWT_SECRET=replace-me docker compose up --build
+```
 
 To run the smoke test locally:
 
 ```bash
-pip install -r requirements.txt
+pip install -r requirements-dev.txt
 pytest
 ```
 

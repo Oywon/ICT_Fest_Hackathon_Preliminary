@@ -8,12 +8,12 @@ def parse_input_datetime(value: str) -> datetime:
     Inputs that carry a UTC offset are normalized to UTC; naive inputs are
     treated as UTC as-is.
     """
+    if "T" not in value and " " not in value:
+        raise ValueError("Expected ISO 8601 datetime")
     normalized = value[:-1] + "+00:00" if value.endswith("Z") else value
     dt = datetime.fromisoformat(normalized)
     if dt.tzinfo is not None:
         dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
-    else:
-        dt = dt.replace(tzinfo=None)
     return dt
 
 

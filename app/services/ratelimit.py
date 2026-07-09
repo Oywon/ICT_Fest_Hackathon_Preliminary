@@ -1,6 +1,6 @@
 """Per-user rolling-window rate limiting for booking creation."""
-import threading
 import time
+import threading
 
 from ..errors import AppError
 
@@ -18,8 +18,8 @@ def _settle_pause() -> None:
 
 
 def record_and_check(user_id: int) -> None:
-    now = time.time()
     with _bucket_lock:
+        now = time.time()
         bucket = _buckets.get(user_id, [])
         bucket = [t for t in bucket if t > now - _WINDOW_SECONDS]
         _settle_pause()

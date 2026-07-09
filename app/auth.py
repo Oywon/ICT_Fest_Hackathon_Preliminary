@@ -2,6 +2,7 @@
 import hashlib
 import hmac
 import os
+import threading
 import uuid
 from datetime import datetime, timedelta, timezone
 
@@ -22,6 +23,8 @@ from .models import User
 # Access tokens presented to /auth/logout are recorded here so they can no
 # longer be used.
 _revoked_tokens: set[str] = set()
+_used_refresh_tokens: set[str] = set()
+_token_lock = threading.Lock()
 
 _PBKDF2_ROUNDS = 100_000
 
@@ -47,7 +50,7 @@ def _now_ts() -> int:
 
 def create_access_token(user: User) -> str:
     iat = _now_ts()
-    lifetime = timedelta(seconds=ACCESS_TOKEN_EXPIRE_MINUTES * 60)
+    lifetime = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     payload = {
         "sub": str(user.id),
         "org": user.org_id,
@@ -77,13 +80,49 @@ def create_refresh_token(user: User) -> str:
 
 def decode_token(token: str) -> dict:
     try:
-        return jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+        return jwt.decode(
+            token,
+            JWT_SECRET,
+            algorithms=[JWT_ALGORITHM],
+            options={"require": ["sub", "org", "role", "jti", "iat", "exp", "type"]},
+        )
     except jwt.PyJWTError:
         raise AppError(401, "UNAUTHORIZED", "Invalid or expired token")
 
 
 def revoke_access_token(payload: dict) -> None:
-    _revoked_tokens.add(payload["jti"])
+    jti = payload.get("jti")
+    if not isinstance(jti, str) or not jti:
+        raise AppError(401, "UNAUTHORIZED", "Invalid token")
+    with _token_lock:
+        _revoked_tokens.add(jti)
+
+
+def consume_refresh_token(payload: dict) -> None:
+    jti = payload.get("jti")
+    if not isinstance(jti, str) or not jti:
+        raise AppError(401, "UNAUTHORIZED", "Invalid token")
+    with _token_lock:
+        if jti in _used_refresh_tokens:
+            raise AppError(401, "UNAUTHORIZED", "Refresh token has already been used")
+        _used_refresh_tokens.add(jti)
+
+
+def _validate_payload_shape(payload: dict, expected_type: str) -> None:
+    if payload.get("type") != expected_type:
+        raise AppError(401, "UNAUTHORIZED", "Wrong token type")
+    if not isinstance(payload.get("sub"), str):
+        raise AppError(401, "UNAUTHORIZED", "Invalid token")
+    try:
+        int(payload["sub"])
+    except (TypeError, ValueError):
+        raise AppError(401, "UNAUTHORIZED", "Invalid token")
+    if not isinstance(payload.get("org"), int):
+        raise AppError(401, "UNAUTHORIZED", "Invalid token")
+    if payload.get("role") not in {"admin", "member"}:
+        raise AppError(401, "UNAUTHORIZED", "Invalid token")
+    if not isinstance(payload.get("jti"), str) or not payload["jti"]:
+        raise AppError(401, "UNAUTHORIZED", "Invalid token")
 
 
 def get_token_payload(request: Request) -> dict:
@@ -92,8 +131,7 @@ def get_token_payload(request: Request) -> dict:
         raise AppError(401, "UNAUTHORIZED", "Missing bearer token")
     token = header[len("Bearer "):].strip()
     payload = decode_token(token)
-    if payload.get("type") != "access":
-        raise AppError(401, "UNAUTHORIZED", "Wrong token type")
+    _validate_payload_shape(payload, "access")
     if payload.get("jti") in _revoked_tokens:
         raise AppError(401, "UNAUTHORIZED", "Token has been revoked")
     return payload
@@ -103,9 +141,15 @@ def get_current_user(
     payload: dict = Depends(get_token_payload),
     db: Session = Depends(get_db),
 ) -> User:
-    user = db.query(User).filter(User.id == int(payload["sub"])).first()
+    try:
+        user_id = int(payload["sub"])
+    except (TypeError, ValueError):
+        raise AppError(401, "UNAUTHORIZED", "Invalid token")
+    user = db.query(User).filter(User.id == user_id).first()
     if user is None:
         raise AppError(401, "UNAUTHORIZED", "Unknown user")
+    if user.org_id != payload.get("org") or user.role != payload.get("role"):
+        raise AppError(401, "UNAUTHORIZED", "Invalid token")
     return user
 
 
